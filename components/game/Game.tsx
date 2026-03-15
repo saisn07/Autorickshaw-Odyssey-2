@@ -24,17 +24,7 @@ interface Dog {
   crossing: boolean // Is the dog crossing the road?
 }
 
-interface Cattle {
-  x: number
-  y: number
-  frame: number
-  speed: number
-  direction: 1 | -1
-  legPhase: number
-  entryPath: "road-cross" | "footpath-wander"
-  targetY: number
-  crossing: boolean
-}
+
 
 interface Raindrop {
   x: number
@@ -121,7 +111,6 @@ export default function Game() {
     buildings: [] as Building[],
     farBuildings: [] as Building[],
     dogs: [] as Dog[],
-    cattle: [] as Cattle[],
     raindrops: [] as Raindrop[],
     obstacles: [] as Obstacle[],
     vendors: [] as Vendor[],
@@ -144,12 +133,12 @@ export default function Game() {
     rainTriggered: false, // Only trigger rain after hospital/garden
     rainWarningGiven: false,
     lastDogSpawn: 0,
-    lastCattleSpawn: 0,
     lastPotholeSpawn: 0,
     lastVehicleSpawn: 0,
     lastBarricadeSpawn: 0,
     lastBusStopSpawn: 0,
     lastZebraCrossingSpawn: 0,
+    zebraCrossingActive: false,
     lastBikeSpawn: 0,
     lastSchoolVanSpawn: 0,
     lastAmbulanceSpawn: 0,
@@ -189,7 +178,6 @@ export default function Game() {
     game.buildings = []
     game.farBuildings = []
     game.dogs = []
-    game.cattle = []
     game.raindrops = []
     game.obstacles = []
     game.vendors = []
@@ -211,12 +199,12 @@ export default function Game() {
     game.rainTriggered = false
     game.rainWarningGiven = false
     game.lastDogSpawn = 0
-    game.lastCattleSpawn = 0
     game.lastPotholeSpawn = 0
     game.lastVehicleSpawn = 0
     game.lastBarricadeSpawn = 0
     game.lastBusStopSpawn = 0
     game.lastZebraCrossingSpawn = 0
+    game.zebraCrossingActive = false
     game.lastBikeSpawn = 0
     game.lastSchoolVanSpawn = 0
     game.lastAmbulanceSpawn = 0
@@ -436,47 +424,7 @@ export default function Game() {
       })
     }
     
-    // Initialize cattle with varied entry paths
-    const spawnCattle = () => {
-      const entryPaths: Cattle["entryPath"][] = ["road-cross", "footpath-wander"]
-      const entryPath = entryPaths[Math.floor(Math.random() * entryPaths.length)]
-      
-      let startX: number
-      let startY: number
-      let targetY: number
-      let direction: 1 | -1
-      let crossing = false
-      
-      switch (entryPath) {
-        case "road-cross":
-          // Cattle crosses the road slowly
-          startX = canvas.width + Math.random() * 150
-          startY = Math.random() > 0.5 ? GROUND_Y - 20 : GROUND_Y + 60
-          targetY = startY < GROUND_Y + 20 ? GROUND_Y + 50 : GROUND_Y + 10
-          direction = -1
-          crossing = true
-          break
-        case "footpath-wander":
-          // Cattle wandering near footpath
-          startX = canvas.width + Math.random() * 100
-          startY = GROUND_Y + 10 + Math.random() * 20
-          targetY = startY
-          direction = -1
-          break
-      }
-      
-      game.cattle.push({
-        x: startX,
-        y: startY,
-        frame: 0,
-        speed: Math.random() * 0.8 + 0.5, // Slower than dogs
-        direction: direction,
-        legPhase: Math.random() * Math.PI * 2,
-        entryPath: entryPath,
-        targetY: targetY,
-        crossing: crossing,
-      })
-    }
+    
 
     // Initialize vendors on footpath
     const spawnVendor = (initialX?: number) => {
@@ -734,20 +682,29 @@ export default function Game() {
       ctx.strokeStyle = "#333"
       ctx.strokeRect(30, -25, 18, 25)
 
-      // Headlight
-      ctx.fillStyle = "#FFFF99"
-      ctx.beginPath()
-      ctx.arc(48, 10, 5, 0, Math.PI * 2)
-      ctx.fill()
+      // Headlight - only show during rain/dark conditions
+      const showHeadlights = game.isRaining || game.weatherState === "darkening" || game.weatherState === "drizzle"
+      if (showHeadlights) {
+        ctx.fillStyle = "#FFFF99"
+        ctx.beginPath()
+        ctx.arc(48, 10, 5, 0, Math.PI * 2)
+        ctx.fill()
 
-      // Light beam effect
-      ctx.fillStyle = "rgba(255, 255, 150, 0.1)"
-      ctx.beginPath()
-      ctx.moveTo(53, 10)
-      ctx.lineTo(100, -10)
-      ctx.lineTo(100, 30)
-      ctx.closePath()
-      ctx.fill()
+        // Light beam effect
+        ctx.fillStyle = "rgba(255, 255, 150, 0.2)"
+        ctx.beginPath()
+        ctx.moveTo(53, 10)
+        ctx.lineTo(100, -10)
+        ctx.lineTo(100, 30)
+        ctx.closePath()
+        ctx.fill()
+      } else {
+        // Just the headlight casing (off) during daytime
+        ctx.fillStyle = "#888"
+        ctx.beginPath()
+        ctx.arc(48, 10, 4, 0, Math.PI * 2)
+        ctx.fill()
+      }
 
       // Driver silhouette
       ctx.fillStyle = "#333"
@@ -823,84 +780,7 @@ export default function Game() {
       ctx.restore()
     }
     
-    // Draw cattle (cow)
-    const drawCattle = (cattle: Cattle) => {
-      ctx.save()
-      ctx.translate(cattle.x, cattle.y)
-      if (cattle.direction === 1) {
-        ctx.scale(-1, 1)
-      }
-
-      const legOffset = Math.sin(cattle.legPhase) * 5
-
-      // Body
-      ctx.fillStyle = "#f5f5dc"
-      ctx.beginPath()
-      ctx.ellipse(0, -15, 35, 20, 0, 0, Math.PI * 2)
-      ctx.fill()
-      
-      // Head
-      ctx.beginPath()
-      ctx.ellipse(32, -20, 15, 12, 0, 0, Math.PI * 2)
-      ctx.fill()
-      
-      // Spots
-      ctx.fillStyle = "#8B4513"
-      ctx.beginPath()
-      ctx.ellipse(-10, -20, 10, 8, 0.3, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.beginPath()
-      ctx.ellipse(10, -10, 8, 6, -0.2, 0, Math.PI * 2)
-      ctx.fill()
-      
-      // Legs (animated)
-      ctx.fillStyle = "#f5f5dc"
-      ctx.fillRect(-25, 0, 8, 18 + legOffset)
-      ctx.fillRect(-10, 0, 8, 18 - legOffset)
-      ctx.fillRect(10, 0, 8, 18 + legOffset)
-      ctx.fillRect(25, 0, 8, 18 - legOffset)
-      
-      // Eyes
-      ctx.fillStyle = "#000"
-      ctx.beginPath()
-      ctx.arc(38, -23, 3, 0, Math.PI * 2)
-      ctx.fill()
-      
-      // Nose/muzzle
-      ctx.fillStyle = "#DEB887"
-      ctx.beginPath()
-      ctx.ellipse(42, -15, 6, 4, 0, 0, Math.PI * 2)
-      ctx.fill()
-      
-      // Horns
-      ctx.strokeStyle = "#8B7355"
-      ctx.lineWidth = 3
-      ctx.beginPath()
-      ctx.moveTo(28, -30)
-      ctx.quadraticCurveTo(22, -42, 26, -40)
-      ctx.stroke()
-      ctx.beginPath()
-      ctx.moveTo(38, -30)
-      ctx.quadraticCurveTo(44, -42, 40, -40)
-      ctx.stroke()
-      
-      // Tail
-      ctx.beginPath()
-      ctx.moveTo(-32, -10)
-      ctx.quadraticCurveTo(-45, -5 + Math.sin(cattle.legPhase) * 8, -42, 5)
-      ctx.lineWidth = 2
-      ctx.strokeStyle = "#f5f5dc"
-      ctx.stroke()
-      // Tail tuft
-      ctx.fillStyle = "#8B4513"
-      ctx.beginPath()
-      ctx.arc(-42, 5, 4, 0, Math.PI * 2)
-      ctx.fill()
-
-      ctx.restore()
-    }
-    
-    // Draw school crowd on footpath
+// Draw school crowd on footpath
     const drawSchoolCrowd = (crowd: SchoolCrowd) => {
       ctx.save()
       ctx.translate(crowd.x, GROUND_Y - FOOTPATH_HEIGHT + 5)
@@ -2365,32 +2245,6 @@ export default function Game() {
         game.lastDogSpawn = 0
       }
       
-      // Update and draw cattle - new path-based behavior
-      game.cattle = game.cattle.filter((cattle) => {
-        cattle.x -= game.speed * 0.3 // Slower than dogs
-        cattle.legPhase += 0.15
-        
-        // Move toward target Y (for crossing cattle)
-        if (cattle.crossing && Math.abs(cattle.y - cattle.targetY) > 2) {
-          cattle.y += (cattle.targetY > cattle.y ? 0.8 : -0.8)
-        }
-        
-        // Remove cattle when off-screen
-        if (cattle.x < -80) {
-          return false
-        }
-        
-        drawCattle(cattle)
-        return true
-      })
-      
-      // Spawn cattle occasionally - appears at random intervals with new paths
-      game.lastCattleSpawn++
-      if (game.lastCattleSpawn > 800 + Math.random() * 800 && game.cattle.length < 1) {
-        spawnCattle()
-        game.lastCattleSpawn = 0
-      }
-      
       // Update and draw school crowds (only in school area)
       if (game.currentLandmark.type === "school") {
         game.schoolCrowds = game.schoolCrowds.filter((crowd) => {
@@ -2463,11 +2317,50 @@ export default function Game() {
             })
           }
         }
-      } else {
+} else {
         // Clear bus stops when leaving busstop area
         game.busStops = []
       }
-
+      
+      // Update and draw zebra crossings with traffic signals - requires braking
+      game.zebraCrossings = game.zebraCrossings.filter((crossing) => {
+        crossing.x -= game.speed * 0.8
+        crossing.signalTimer++
+        
+        // Signal changes after certain time
+        if (crossing.signalTimer > 180 && crossing.signalState === "red") {
+          crossing.signalState = "green"
+          crossing.hasPassed = true
+          addNotification("Green light - GO!", "#00FF00")
+        }
+        
+        // Remove when off-screen
+        if (crossing.x < -100) {
+          game.zebraCrossingActive = false
+          return false
+        }
+        
+        drawZebraCrossing(crossing)
+        return true
+      })
+      
+      // Spawn zebra crossings periodically - requires player to brake
+      game.lastZebraCrossingSpawn++
+      if (game.lastZebraCrossingSpawn > 800 + Math.random() * 600 && 
+          game.zebraCrossings.length === 0 && 
+          !game.zebraCrossingActive &&
+          game.score > 200) {
+        game.zebraCrossings.push({
+          x: canvas.width + 100,
+          signalState: "red",
+          signalTimer: 0,
+          hasPassed: false
+        })
+        game.zebraCrossingActive = true
+        game.lastZebraCrossingSpawn = 0
+        addNotification("ZEBRA CROSSING - BRAKE!", "#FF0000")
+      }
+      
       // Update and draw raindrops
       game.raindrops = game.raindrops.filter((drop) => {
         drop.y += drop.speed
@@ -2558,6 +2451,31 @@ export default function Game() {
         height: 40,
       }
 
+      // Check zebra crossing collision - must brake at red signal
+      for (const crossing of game.zebraCrossings) {
+        // If signal is red and player enters the crossing zone without braking at low speed
+        if (crossing.signalState === "red" && !crossing.hasPassed) {
+          const crossingZone = {
+            x: crossing.x - 50,
+            y: GROUND_Y,
+            width: 100,
+            height: 80
+          }
+          
+          // Player is in the crossing zone
+          if (autoHitbox.x + autoHitbox.width > crossingZone.x &&
+              autoHitbox.x < crossingZone.x + crossingZone.width) {
+            // If moving too fast (not braking properly), game over
+            if (game.speed > 2) {
+              setGameState("gameover")
+              if (game.score > highScore) {
+                setHighScore(game.score)
+              }
+            }
+          }
+        }
+      }
+      
       // Check dog collisions - dogs crossing or running on road can cause collision
       for (const dog of game.dogs) {
         // Only check if dog is on the road (road-cross or road-run types)
@@ -2573,31 +2491,6 @@ export default function Game() {
             autoHitbox.x + autoHitbox.width > dogHitbox.x &&
             autoHitbox.y < dogHitbox.y + dogHitbox.height &&
             autoHitbox.y + autoHitbox.height > dogHitbox.y &&
-            !game.isJumping
-          ) {
-            setGameState("gameover")
-            if (game.score > highScore) {
-              setHighScore(game.score)
-            }
-          }
-        }
-      }
-      
-      // Check cattle collisions - cattle on road can cause collision
-      for (const cattle of game.cattle) {
-        // Only check if cattle is on the road (not on footpath)
-        if (cattle.y >= GROUND_Y - 10) {
-          const cattleHitbox = {
-            x: cattle.x - 35,
-            y: cattle.y - 25,
-            width: 70,
-            height: 35,
-          }
-          if (
-            autoHitbox.x < cattleHitbox.x + cattleHitbox.width &&
-            autoHitbox.x + autoHitbox.width > cattleHitbox.x &&
-            autoHitbox.y < cattleHitbox.y + cattleHitbox.height &&
-            autoHitbox.y + autoHitbox.height > cattleHitbox.y &&
             !game.isJumping
           ) {
             setGameState("gameover")
