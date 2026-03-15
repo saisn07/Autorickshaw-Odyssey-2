@@ -19,6 +19,21 @@ interface Dog {
   direction: 1 | -1
   color: string
   legPhase: number
+  entryPath: "footpath" | "road-cross" | "road-run" // Where the dog appears from
+  targetY: number // Where the dog is heading
+  crossing: boolean // Is the dog crossing the road?
+}
+
+interface Cattle {
+  x: number
+  y: number
+  frame: number
+  speed: number
+  direction: 1 | -1
+  legPhase: number
+  entryPath: "road-cross" | "footpath-wander"
+  targetY: number
+  crossing: boolean
 }
 
 interface Raindrop {
@@ -31,9 +46,14 @@ interface Raindrop {
 interface Obstacle {
   x: number
   y: number
-  type: "pothole" | "cow" | "barricade" | "schoolvan" | "zebracrossing"
+  type: "pothole" | "barricade" | "schoolvan" | "zebracrossing" | "bike" | "ambulance"
   size?: number // For varied pothole sizes
   lane?: number // For lane-specific obstacles like barricades
+}
+
+interface SchoolCrowd {
+  x: number
+  people: { offsetX: number; offsetY: number; color: string; size: number }[]
 }
 
 interface BusStop {
@@ -67,7 +87,7 @@ interface Notification {
 }
 
 interface Landmark {
-  type: "residential" | "school" | "hospital" | "garden" | "market"
+  type: "residential" | "hospital" | "busstop" | "garden" | "school" | "market"
   startScore: number
 }
 
@@ -101,6 +121,7 @@ export default function Game() {
     buildings: [] as Building[],
     farBuildings: [] as Building[],
     dogs: [] as Dog[],
+    cattle: [] as Cattle[],
     raindrops: [] as Raindrop[],
     obstacles: [] as Obstacle[],
     vendors: [] as Vendor[],
@@ -108,27 +129,31 @@ export default function Game() {
     sideVehicles: [] as SideVehicle[],
     busStops: [] as BusStop[],
     zebraCrossings: [] as ZebraCrossing[],
+    schoolCrowds: [] as SchoolCrowd[],
     groundOffset: 0,
     speed: 5,
     baseSpeed: 5,
     isBraking: false,
     score: 0,
-    // Weather system - progressive transition
+    // Weather system - progressive transition (starts sunny, rain comes after hospital)
     weatherState: "sunny" as "sunny" | "cloudy" | "darkening" | "drizzle" | "raining",
     cloudDarkness: 0, // 0-1 for gradual darkening
     isRaining: false,
     rainTimer: 0,
     rainDuration: 0,
-    nextRainTime: 400, // Later rain start
+    rainTriggered: false, // Only trigger rain after hospital/garden
     rainWarningGiven: false,
     lastDogSpawn: 0,
-    lastCowSpawn: 0,
+    lastCattleSpawn: 0,
     lastPotholeSpawn: 0,
     lastVehicleSpawn: 0,
     lastBarricadeSpawn: 0,
     lastBusStopSpawn: 0,
     lastZebraCrossingSpawn: 0,
-    currentLane: 0, // 0 = top, 1 = bottom
+    lastBikeSpawn: 0,
+    lastSchoolVanSpawn: 0,
+    lastAmbulanceSpawn: 0,
+    currentLane: 1, // Start at bottom lane (1 = bottom, 0 = top)
     waterClogTimer: 0,
     autoFrame: 0,
     wheelRotation: 0,
@@ -138,12 +163,14 @@ export default function Game() {
     gameStarted: false,
     // Notifications
     notifications: [] as Notification[],
-    // Difficulty level and landmarks
+    // Difficulty level and landmarks - procedural order: residential -> hospital -> busstop -> garden (rain) -> school
     currentLevel: 1,
     currentLandmark: { type: "residential", startScore: 0 } as Landmark,
     nextLandmarkScore: 500,
     // Time of day for visual ambiance
     timeOfDay: 0, // 0 = morning, increases over time
+    // Distance tracking for specific spawns
+    distanceTraveled: 0,
   })
 
   const jump = useCallback(() => {
@@ -162,6 +189,7 @@ export default function Game() {
     game.buildings = []
     game.farBuildings = []
     game.dogs = []
+    game.cattle = []
     game.raindrops = []
     game.obstacles = []
     game.vendors = []
@@ -169,35 +197,40 @@ export default function Game() {
     game.sideVehicles = []
     game.busStops = []
     game.zebraCrossings = []
+    game.schoolCrowds = []
     game.groundOffset = 0
     game.speed = 0 // Start at 0, will accelerate after green light
     game.baseSpeed = 5
     game.isBraking = false
     game.score = 0
-    // Weather reset - start sunny morning
+    // Weather reset - start bright sunny morning, rain only after garden area
     game.weatherState = "sunny"
     game.cloudDarkness = 0
     game.isRaining = false
     game.rainTimer = 0
-    game.nextRainTime = 500 + Math.random() * 200 // Rain comes later
+    game.rainTriggered = false
     game.rainWarningGiven = false
     game.lastDogSpawn = 0
-    game.lastCowSpawn = 0
+    game.lastCattleSpawn = 0
     game.lastPotholeSpawn = 0
     game.lastVehicleSpawn = 0
     game.lastBarricadeSpawn = 0
     game.lastBusStopSpawn = 0
     game.lastZebraCrossingSpawn = 0
-    game.currentLane = 0
+    game.lastBikeSpawn = 0
+    game.lastSchoolVanSpawn = 0
+    game.lastAmbulanceSpawn = 0
+    game.currentLane = 1 // Start at bottom lane
     game.waterClogTimer = 0
     game.timeOfDay = 0
+    game.distanceTraveled = 0
     // Traffic signal reset
     game.trafficSignal = "red"
     game.signalTimer = 0
     game.gameStarted = false
     // Notifications
     game.notifications = []
-    // Level reset
+    // Level reset - procedural order
     game.currentLevel = 1
     game.currentLandmark = { type: "residential", startScore: 0 }
     game.nextLandmarkScore = 500
@@ -226,7 +259,7 @@ export default function Game() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === "Space" || e.code === "ArrowUp") {
+      if (e.code === "Space") {
         e.preventDefault()
         if (gameState === "start" || gameState === "gameover") {
           startGame()
@@ -234,7 +267,12 @@ export default function Game() {
           jump()
         }
       }
-      // Arrow Down or S to switch lanes
+      // Arrow Up (^) to switch from bottom lane to top lane
+      if ((e.code === "ArrowUp" || e.code === "KeyW") && gameState === "playing") {
+        e.preventDefault()
+        switchLane()
+      }
+      // Arrow Down or S to switch from top lane to bottom lane
       if ((e.code === "ArrowDown" || e.code === "KeyS") && gameState === "playing") {
         e.preventDefault()
         switchLane()
@@ -265,11 +303,11 @@ export default function Game() {
         if (touch.clientX < screenWidth / 3) {
           startBraking()
         }
-        // Bottom half = switch lane
-        else if (touch.clientY > screenHeight / 2) {
+        // Top third = switch lane (up arrow equivalent)
+        else if (touch.clientY < screenHeight / 3) {
           switchLane()
         }
-        // Top half = jump
+        // Middle = jump
         else {
           jump()
         }
@@ -347,17 +385,96 @@ export default function Game() {
       return windows
     }
 
-    // Initialize dogs
+    // Initialize dogs with varied entry paths
     const spawnDog = () => {
       const colors = ["#8B4513", "#D2691E", "#F4A460", "#2F1810", "#FFDAB9"]
+      const entryPaths: Dog["entryPath"][] = ["footpath", "road-cross", "road-run"]
+      const entryPath = entryPaths[Math.floor(Math.random() * entryPaths.length)]
+      
+      let startX: number
+      let startY: number
+      let targetY: number
+      let direction: 1 | -1
+      let crossing = false
+      
+      switch (entryPath) {
+        case "footpath":
+          // Dog appears on footpath from off-screen
+          startX = canvas.width + Math.random() * 100
+          startY = GROUND_Y - FOOTPATH_HEIGHT + 5 + Math.random() * 15
+          targetY = startY
+          direction = -1
+          break
+        case "road-cross":
+          // Dog crosses the road from top to bottom or vice versa
+          startX = canvas.width + Math.random() * 200
+          startY = Math.random() > 0.5 ? GROUND_Y - FOOTPATH_HEIGHT : GROUND_Y + 70
+          targetY = startY < GROUND_Y ? GROUND_Y + 50 : GROUND_Y - FOOTPATH_HEIGHT + 10
+          direction = -1
+          crossing = true
+          break
+        case "road-run":
+          // Dog runs across the road horizontally
+          startX = canvas.width + 50
+          startY = GROUND_Y + 20 + Math.random() * 40
+          targetY = startY
+          direction = -1
+          break
+      }
+      
       game.dogs.push({
-        x: canvas.width + Math.random() * 100,
-        y: GROUND_Y - FOOTPATH_HEIGHT + 5 + Math.random() * 15,
+        x: startX,
+        y: startY,
         frame: 0,
         speed: Math.random() * 2 + 1.5,
-        direction: Math.random() > 0.3 ? -1 : 1,
+        direction: direction,
         color: colors[Math.floor(Math.random() * colors.length)],
         legPhase: Math.random() * Math.PI * 2,
+        entryPath: entryPath,
+        targetY: targetY,
+        crossing: crossing,
+      })
+    }
+    
+    // Initialize cattle with varied entry paths
+    const spawnCattle = () => {
+      const entryPaths: Cattle["entryPath"][] = ["road-cross", "footpath-wander"]
+      const entryPath = entryPaths[Math.floor(Math.random() * entryPaths.length)]
+      
+      let startX: number
+      let startY: number
+      let targetY: number
+      let direction: 1 | -1
+      let crossing = false
+      
+      switch (entryPath) {
+        case "road-cross":
+          // Cattle crosses the road slowly
+          startX = canvas.width + Math.random() * 150
+          startY = Math.random() > 0.5 ? GROUND_Y - 20 : GROUND_Y + 60
+          targetY = startY < GROUND_Y + 20 ? GROUND_Y + 50 : GROUND_Y + 10
+          direction = -1
+          crossing = true
+          break
+        case "footpath-wander":
+          // Cattle wandering near footpath
+          startX = canvas.width + Math.random() * 100
+          startY = GROUND_Y + 10 + Math.random() * 20
+          targetY = startY
+          direction = -1
+          break
+      }
+      
+      game.cattle.push({
+        x: startX,
+        y: startY,
+        frame: 0,
+        speed: Math.random() * 0.8 + 0.5, // Slower than dogs
+        direction: direction,
+        legPhase: Math.random() * Math.PI * 2,
+        entryPath: entryPath,
+        targetY: targetY,
+        crossing: crossing,
       })
     }
 
@@ -383,43 +500,117 @@ export default function Game() {
       }
     }
 
-    // Spawn obstacle - progressive difficulty based on score/level
+    // Spawn obstacle - procedural difficulty based on landmark areas
+    // Order: residential -> hospital -> busstop -> garden (rain) -> school
     const spawnObstacle = () => {
-      game.lastCowSpawn++
       game.lastPotholeSpawn++
       game.lastBarricadeSpawn++
+      game.lastBikeSpawn++
+      game.lastSchoolVanSpawn++
+      game.lastAmbulanceSpawn++
       
-      const level = game.currentLevel
+      const landmark = game.currentLandmark.type
       const random = Math.random()
-      let type: "pothole" | "cow" | "barricade"
+      let type: "pothole" | "barricade" | "bike" | "schoolvan" | "ambulance" | null = null
       let size = 1
       let lane: number | undefined = undefined
       
-      // Progressive difficulty:
-      // Level 1 (0-500): Mostly barricades, few dogs on footpath
-      // Level 2 (500-1500): Add cows occasionally
-      // Level 3 (1500-3000): More potholes, thicker traffic
-      // Level 4 (3000+): Everything intensifies - potholes + heavy traffic
+      // Procedural difficulty based on landmark:
+      // residential: Barricades, occasional bikes
+      // hospital: Ambulances, more traffic
+      // busstop: Regular traffic
+      // garden: Potholes (rain has started), water clogs
+      // school: School vans, crowds, bikes
       
-      if (level >= 2 && random < 0.06 && game.lastCowSpawn > 600 + Math.random() * 600) {
-        type = "cow"
-        game.lastCowSpawn = 0
+      switch (landmark) {
+        case "residential":
+          // Mostly barricades and occasional bikes
+          if (random < 0.4 && game.lastBarricadeSpawn > 150 + Math.random() * 200) {
+            type = "barricade"
+            lane = Math.random() > 0.5 ? 0 : 1
+            game.lastBarricadeSpawn = 0
+          } else if (random < 0.5 && game.lastBikeSpawn > 300 + Math.random() * 200) {
+            type = "bike"
+            lane = Math.random() > 0.5 ? 0 : 1
+            game.lastBikeSpawn = 0
+          }
+          break
+          
+        case "hospital":
+          // Ambulances are common here
+          if (random < 0.25 && game.lastAmbulanceSpawn > 400 + Math.random() * 300) {
+            type = "ambulance"
+            lane = Math.random() > 0.5 ? 0 : 1
+            game.lastAmbulanceSpawn = 0
+          } else if (random < 0.45 && game.lastBarricadeSpawn > 180 + Math.random() * 150) {
+            type = "barricade"
+            lane = Math.random() > 0.5 ? 0 : 1
+            game.lastBarricadeSpawn = 0
+          }
+          break
+          
+        case "busstop":
+          // Regular traffic
+          if (random < 0.35 && game.lastBarricadeSpawn > 160 + Math.random() * 180) {
+            type = "barricade"
+            lane = Math.random() > 0.5 ? 0 : 1
+            game.lastBarricadeSpawn = 0
+          } else if (random < 0.5 && game.lastBikeSpawn > 350 + Math.random() * 200) {
+            type = "bike"
+            lane = Math.random() > 0.5 ? 0 : 1
+            game.lastBikeSpawn = 0
+          }
+          break
+          
+        case "garden":
+          // Potholes due to rain, fewer vehicles
+          if (random < 0.45 && game.lastPotholeSpawn > 120 + Math.random() * 150) {
+            type = "pothole"
+            size = 0.6 + Math.random() * 0.8
+            game.lastPotholeSpawn = 0
+          } else if (random < 0.55 && game.lastBarricadeSpawn > 200 + Math.random() * 200) {
+            type = "barricade"
+            lane = Math.random() > 0.5 ? 0 : 1
+            game.lastBarricadeSpawn = 0
+          }
+          break
+          
+        case "school":
+          // School vans and bikes are common
+          if (random < 0.3 && game.lastSchoolVanSpawn > 500 + Math.random() * 300) {
+            type = "schoolvan"
+            lane = Math.random() > 0.5 ? 0 : 1
+            game.lastSchoolVanSpawn = 0
+          } else if (random < 0.5 && game.lastBikeSpawn > 250 + Math.random() * 200) {
+            type = "bike"
+            lane = Math.random() > 0.5 ? 0 : 1
+            game.lastBikeSpawn = 0
+          } else if (random < 0.6 && game.lastBarricadeSpawn > 180 + Math.random() * 150) {
+            type = "barricade"
+            lane = Math.random() > 0.5 ? 0 : 1
+            game.lastBarricadeSpawn = 0
+          }
+          break
+          
+        case "market":
+          // Heavy traffic - everything
+          if (random < 0.35 && game.lastPotholeSpawn > 100 + Math.random() * 100) {
+            type = "pothole"
+            size = 0.5 + Math.random() * 0.7
+            game.lastPotholeSpawn = 0
+          } else if (random < 0.5 && game.lastBarricadeSpawn > 120 + Math.random() * 100) {
+            type = "barricade"
+            lane = Math.random() > 0.5 ? 0 : 1
+            game.lastBarricadeSpawn = 0
+          } else if (random < 0.6 && game.lastBikeSpawn > 200 + Math.random() * 150) {
+            type = "bike"
+            lane = Math.random() > 0.5 ? 0 : 1
+            game.lastBikeSpawn = 0
+          }
+          break
       }
-      // Barricades - lane specific (more common at all levels)
-      else if (random < 0.35 && game.lastBarricadeSpawn > 150 + Math.random() * 200) {
-        type = "barricade"
-        lane = Math.random() > 0.5 ? 0 : 1 // Random lane
-        game.lastBarricadeSpawn = 0
-      }
-      // Potholes - increase with level
-      else if (level >= 3 && random < 0.5 && game.lastPotholeSpawn > (150 - level * 20) + Math.random() * 200) {
-        type = "pothole"
-        size = 0.6 + Math.random() * 0.8
-        game.lastPotholeSpawn = 0
-      }
-      else {
-        return // Skip spawning for natural feel
-      }
+      
+      if (type === null) return
       
       game.obstacles.push({
         x: canvas.width + 50,
@@ -629,6 +820,113 @@ export default function Game() {
       ctx.strokeStyle = dog.color
       ctx.stroke()
 
+      ctx.restore()
+    }
+    
+    // Draw cattle (cow)
+    const drawCattle = (cattle: Cattle) => {
+      ctx.save()
+      ctx.translate(cattle.x, cattle.y)
+      if (cattle.direction === 1) {
+        ctx.scale(-1, 1)
+      }
+
+      const legOffset = Math.sin(cattle.legPhase) * 5
+
+      // Body
+      ctx.fillStyle = "#f5f5dc"
+      ctx.beginPath()
+      ctx.ellipse(0, -15, 35, 20, 0, 0, Math.PI * 2)
+      ctx.fill()
+      
+      // Head
+      ctx.beginPath()
+      ctx.ellipse(32, -20, 15, 12, 0, 0, Math.PI * 2)
+      ctx.fill()
+      
+      // Spots
+      ctx.fillStyle = "#8B4513"
+      ctx.beginPath()
+      ctx.ellipse(-10, -20, 10, 8, 0.3, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.beginPath()
+      ctx.ellipse(10, -10, 8, 6, -0.2, 0, Math.PI * 2)
+      ctx.fill()
+      
+      // Legs (animated)
+      ctx.fillStyle = "#f5f5dc"
+      ctx.fillRect(-25, 0, 8, 18 + legOffset)
+      ctx.fillRect(-10, 0, 8, 18 - legOffset)
+      ctx.fillRect(10, 0, 8, 18 + legOffset)
+      ctx.fillRect(25, 0, 8, 18 - legOffset)
+      
+      // Eyes
+      ctx.fillStyle = "#000"
+      ctx.beginPath()
+      ctx.arc(38, -23, 3, 0, Math.PI * 2)
+      ctx.fill()
+      
+      // Nose/muzzle
+      ctx.fillStyle = "#DEB887"
+      ctx.beginPath()
+      ctx.ellipse(42, -15, 6, 4, 0, 0, Math.PI * 2)
+      ctx.fill()
+      
+      // Horns
+      ctx.strokeStyle = "#8B7355"
+      ctx.lineWidth = 3
+      ctx.beginPath()
+      ctx.moveTo(28, -30)
+      ctx.quadraticCurveTo(22, -42, 26, -40)
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.moveTo(38, -30)
+      ctx.quadraticCurveTo(44, -42, 40, -40)
+      ctx.stroke()
+      
+      // Tail
+      ctx.beginPath()
+      ctx.moveTo(-32, -10)
+      ctx.quadraticCurveTo(-45, -5 + Math.sin(cattle.legPhase) * 8, -42, 5)
+      ctx.lineWidth = 2
+      ctx.strokeStyle = "#f5f5dc"
+      ctx.stroke()
+      // Tail tuft
+      ctx.fillStyle = "#8B4513"
+      ctx.beginPath()
+      ctx.arc(-42, 5, 4, 0, Math.PI * 2)
+      ctx.fill()
+
+      ctx.restore()
+    }
+    
+    // Draw school crowd on footpath
+    const drawSchoolCrowd = (crowd: SchoolCrowd) => {
+      ctx.save()
+      ctx.translate(crowd.x, GROUND_Y - FOOTPATH_HEIGHT + 5)
+      
+      const uniformColors = ["#FFFFFF", "#87CEEB", "#FFD700", "#90EE90"]
+      
+      crowd.people.forEach((person, i) => {
+        const bobble = Math.sin(game.autoFrame * 0.15 + i * 0.5) * 2
+        
+        // Head
+        ctx.fillStyle = "#F5DEB3"
+        ctx.beginPath()
+        ctx.arc(person.offsetX, person.offsetY - 12 + bobble, person.size * 0.6, 0, Math.PI * 2)
+        ctx.fill()
+        
+        // Body (school uniform)
+        ctx.fillStyle = person.color
+        ctx.fillRect(person.offsetX - person.size * 0.4, person.offsetY - 6 + bobble, person.size * 0.8, person.size * 1.2)
+        
+        // School bag
+        if (i % 2 === 0) {
+          ctx.fillStyle = "#4169E1"
+          ctx.fillRect(person.offsetX + person.size * 0.3, person.offsetY - 4 + bobble, person.size * 0.4, person.size * 0.8)
+        }
+      })
+      
       ctx.restore()
     }
 
@@ -1128,16 +1426,23 @@ export default function Game() {
       let windowColor = game.isRaining ? "rgba(255, 255, 150, 0.8)" : "rgba(255, 255, 200, 0.5)"
       
       switch (landmark) {
-        case "school":
-          buildingColor = "#FFF8DC" // Cream color for school
-          windowColor = "rgba(135, 206, 250, 0.8)"
+        case "residential":
+          buildingColor = building.color // Default residential colors
           break
         case "hospital":
           buildingColor = "#F0F8FF" // Light blue for hospital
           windowColor = "rgba(255, 255, 255, 0.9)"
           break
+        case "busstop":
+          buildingColor = "#E8E8E8" // Grey tones for bus stop area
+          windowColor = "rgba(200, 200, 200, 0.7)"
+          break
         case "garden":
           buildingColor = "#90EE90" // Light green for garden area
+          break
+        case "school":
+          buildingColor = "#FFF8DC" // Cream color for school
+          windowColor = "rgba(135, 206, 250, 0.8)"
           break
         case "market":
           buildingColor = "#DEB887" // Tan for market
@@ -1160,19 +1465,6 @@ export default function Game() {
       // Landmark-specific decorations
       if (!isFar) {
         switch (landmark) {
-          case "school":
-            // School sign
-            ctx.fillStyle = "#8B4513"
-            ctx.fillRect(building.x + 10, groundBase - building.height - 15, 40, 12)
-            ctx.fillStyle = "#FFF"
-            ctx.font = "8px Arial"
-            ctx.fillText("SCHOOL", building.x + 14, groundBase - building.height - 6)
-            // Flag
-            ctx.fillStyle = "#FF9933"
-            ctx.fillRect(building.x + building.width - 15, groundBase - building.height - 30, 2, 30)
-            ctx.fillStyle = "#138808"
-            ctx.fillRect(building.x + building.width - 13, groundBase - building.height - 28, 12, 8)
-            break
           case "hospital":
             // Red cross
             ctx.fillStyle = "#FF0000"
@@ -1182,6 +1474,16 @@ export default function Game() {
             ctx.fillStyle = "#FFF"
             ctx.font = "bold 10px Arial"
             ctx.fillText("HOSPITAL", building.x + 5, groundBase - 10)
+            break
+          case "busstop":
+            // Bus stop sign post
+            ctx.fillStyle = "#333"
+            ctx.fillRect(building.x + 20, groundBase - 60, 4, 60)
+            ctx.fillStyle = "#1E90FF"
+            ctx.fillRect(building.x + 10, groundBase - 70, 30, 15)
+            ctx.fillStyle = "#FFF"
+            ctx.font = "6px Arial"
+            ctx.fillText("BUS", building.x + 18, groundBase - 60)
             break
           case "garden":
             // Trees
@@ -1201,6 +1503,19 @@ export default function Game() {
               ctx.arc(building.x + 10 + i * 15, groundBase - 5, 4, 0, Math.PI * 2)
               ctx.fill()
             }
+            break
+          case "school":
+            // School sign
+            ctx.fillStyle = "#8B4513"
+            ctx.fillRect(building.x + 10, groundBase - building.height - 15, 40, 12)
+            ctx.fillStyle = "#FFF"
+            ctx.font = "8px Arial"
+            ctx.fillText("SCHOOL", building.x + 14, groundBase - building.height - 6)
+            // Flag
+            ctx.fillStyle = "#FF9933"
+            ctx.fillRect(building.x + building.width - 15, groundBase - building.height - 30, 2, 30)
+            ctx.fillStyle = "#138808"
+            ctx.fillRect(building.x + building.width - 13, groundBase - building.height - 28, 12, 8)
             break
           case "market":
             // Awning
@@ -1577,46 +1892,182 @@ export default function Game() {
           }
           break
 
-        case "cow":
-          // Body
-          ctx.fillStyle = "#f5f5dc"
-          ctx.beginPath()
-          ctx.ellipse(0, -20, 35, 20, 0, 0, Math.PI * 2)
-          ctx.fill()
-          // Head
-          ctx.beginPath()
-          ctx.ellipse(30, -25, 15, 12, 0, 0, Math.PI * 2)
-          ctx.fill()
-          // Spots
-          ctx.fillStyle = "#8B4513"
-          ctx.beginPath()
-          ctx.ellipse(-10, -25, 10, 8, 0.3, 0, Math.PI * 2)
-          ctx.fill()
-          ctx.beginPath()
-          ctx.ellipse(10, -15, 8, 6, -0.2, 0, Math.PI * 2)
-          ctx.fill()
-          // Legs
-          ctx.fillStyle = "#f5f5dc"
-          ctx.fillRect(-25, -5, 8, 20)
-          ctx.fillRect(-10, -5, 8, 20)
-          ctx.fillRect(10, -5, 8, 20)
-          ctx.fillRect(25, -5, 8, 20)
-          // Eyes
-          ctx.fillStyle = "#000"
-          ctx.beginPath()
-          ctx.arc(35, -28, 3, 0, Math.PI * 2)
-          ctx.fill()
-          // Horns
-          ctx.strokeStyle = "#8B7355"
+        case "bike":
+          // Bike - lane specific
+          const bikeLane = obstacle.lane ?? 0
+          const bikeYOffset = bikeLane * 25
+          
+          ctx.save()
+          ctx.translate(0, bikeYOffset)
+          
+          // Bike frame
+          ctx.strokeStyle = "#333"
           ctx.lineWidth = 3
+          // Main frame triangle
           ctx.beginPath()
-          ctx.moveTo(25, -35)
-          ctx.quadraticCurveTo(20, -45, 25, -42)
+          ctx.moveTo(-15, -10)
+          ctx.lineTo(0, -25)
+          ctx.lineTo(15, -10)
+          ctx.lineTo(-15, -10)
+          ctx.stroke()
+          // Handlebar
+          ctx.beginPath()
+          ctx.moveTo(0, -25)
+          ctx.lineTo(5, -30)
           ctx.stroke()
           ctx.beginPath()
-          ctx.moveTo(35, -35)
-          ctx.quadraticCurveTo(40, -45, 35, -42)
+          ctx.moveTo(3, -32)
+          ctx.lineTo(7, -28)
           ctx.stroke()
+          // Seat
+          ctx.fillStyle = "#8B4513"
+          ctx.fillRect(-17, -15, 8, 4)
+          
+          // Wheels
+          ctx.strokeStyle = "#1a1a1a"
+          ctx.lineWidth = 2
+          ctx.beginPath()
+          ctx.arc(-15, 0, 12, 0, Math.PI * 2)
+          ctx.stroke()
+          ctx.beginPath()
+          ctx.arc(15, 0, 12, 0, Math.PI * 2)
+          ctx.stroke()
+          
+          // Spokes
+          ctx.lineWidth = 1
+          for (let i = 0; i < 4; i++) {
+            const angle = (i / 4) * Math.PI * 2 + game.autoFrame * 0.1
+            ctx.beginPath()
+            ctx.moveTo(-15, 0)
+            ctx.lineTo(-15 + Math.cos(angle) * 10, Math.sin(angle) * 10)
+            ctx.stroke()
+            ctx.beginPath()
+            ctx.moveTo(15, 0)
+            ctx.lineTo(15 + Math.cos(angle) * 10, Math.sin(angle) * 10)
+            ctx.stroke()
+          }
+          
+          // Rider
+          ctx.fillStyle = "#F5DEB3"
+          ctx.beginPath()
+          ctx.arc(0, -35, 6, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = "#4169E1"
+          ctx.fillRect(-4, -29, 8, 12)
+          
+          ctx.restore()
+          break
+          
+        case "ambulance":
+          // Ambulance - lane specific
+          const ambLane = obstacle.lane ?? 0
+          const ambYOffset = ambLane * 25
+          
+          ctx.save()
+          ctx.translate(0, ambYOffset)
+          
+          // Ambulance body - white
+          ctx.fillStyle = "#FFFFFF"
+          ctx.fillRect(-40, -35, 80, 35)
+          
+          // Red stripe
+          ctx.fillStyle = "#FF0000"
+          ctx.fillRect(-40, -20, 80, 8)
+          
+          // Red cross
+          ctx.fillStyle = "#FF0000"
+          ctx.fillRect(-5, -32, 10, 3)
+          ctx.fillRect(-2, -35, 4, 9)
+          
+          // Windows
+          ctx.fillStyle = "rgba(135, 206, 250, 0.8)"
+          ctx.fillRect(20, -32, 15, 12)
+          ctx.fillRect(-35, -32, 12, 12)
+          
+          // Wheels
+          ctx.fillStyle = "#1a1a1a"
+          ctx.beginPath()
+          ctx.arc(-25, 5, 8, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(25, 5, 8, 0, Math.PI * 2)
+          ctx.fill()
+          
+          // Flashing lights
+          if (Math.sin(game.autoFrame * 0.3) > 0) {
+            ctx.fillStyle = "#FF0000"
+          } else {
+            ctx.fillStyle = "#0000FF"
+          }
+          ctx.beginPath()
+          ctx.arc(-30, -40, 5, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(30, -40, 5, 0, Math.PI * 2)
+          ctx.fill()
+          
+          // "AMBULANCE" text
+          ctx.fillStyle = "#FF0000"
+          ctx.font = "bold 8px Arial"
+          ctx.fillText("AMBULANCE", -28, -6)
+          
+          ctx.restore()
+          break
+          
+        case "schoolvan":
+          // School van - lane specific
+          const vanLane = obstacle.lane ?? 0
+          const vanYOffset = vanLane * 25
+          
+          ctx.save()
+          ctx.translate(0, vanYOffset)
+          
+          // Van body - yellow
+          ctx.fillStyle = "#FFD700"
+          ctx.fillRect(-35, -35, 70, 35)
+          
+          // Roof
+          ctx.fillStyle = "#FFA500"
+          ctx.fillRect(-30, -45, 60, 12)
+          
+          // Windows
+          ctx.fillStyle = "rgba(135, 206, 250, 0.8)"
+          ctx.fillRect(-28, -42, 15, 10)
+          ctx.fillRect(-8, -42, 15, 10)
+          ctx.fillRect(12, -42, 15, 10)
+          
+          // "SCHOOL" text
+          ctx.fillStyle = "#000"
+          ctx.font = "bold 10px Arial"
+          ctx.fillText("SCHOOL", -22, -20)
+          
+          // Door
+          ctx.fillStyle = "#333"
+          ctx.fillRect(20, -30, 12, 25)
+          
+          // Wheels
+          ctx.fillStyle = "#1a1a1a"
+          ctx.beginPath()
+          ctx.arc(-20, 5, 8, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(20, 5, 8, 0, Math.PI * 2)
+          ctx.fill()
+          
+          // Warning lights (flashing)
+          if (Math.sin(game.autoFrame * 0.2) > 0) {
+            ctx.fillStyle = "#FF0000"
+          } else {
+            ctx.fillStyle = "#880000"
+          }
+          ctx.beginPath()
+          ctx.arc(-30, -40, 4, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(30, -40, 4, 0, Math.PI * 2)
+          ctx.fill()
+          
+          ctx.restore()
           break
 
         case "barricade":
@@ -1700,47 +2151,50 @@ export default function Game() {
       // Time of day progression (affects lighting)
       game.timeOfDay += 0.001
       
-      // Weather state machine with gradual transitions
-      game.rainTimer++
-      
-      // Weather progression: sunny -> cloudy -> darkening -> drizzle -> raining
-      if (game.weatherState === "sunny" && game.rainTimer >= game.nextRainTime - 200) {
-        game.weatherState = "cloudy"
-        addNotification("Clouds gathering...", "#A9A9A9")
-      }
-      else if (game.weatherState === "cloudy" && game.rainTimer >= game.nextRainTime - 100) {
-        game.weatherState = "darkening"
-        game.cloudDarkness = Math.min(1, game.cloudDarkness + 0.02)
-        if (!game.rainWarningGiven) {
-          addNotification("Rain approaching! Watch for water clogging!", "#4682B4")
-          game.rainWarningGiven = true
+      // Weather state machine - rain only triggers after reaching garden area (after hospital and busstop)
+      // Weather stays bright and sunny until garden area
+      if (game.rainTriggered) {
+        game.rainTimer++
+        
+        // Weather progression: sunny -> cloudy -> darkening -> drizzle -> raining
+        if (game.weatherState === "sunny" && game.rainTimer >= 100) {
+          game.weatherState = "cloudy"
+          addNotification("Clouds gathering...", "#A9A9A9")
         }
-      }
-      else if (game.weatherState === "darkening" && game.rainTimer >= game.nextRainTime - 50) {
-        game.weatherState = "drizzle"
-        addNotification("Drizzle starting...", "#6495ED")
-      }
-      else if (game.weatherState === "drizzle" && game.rainTimer >= game.nextRainTime) {
-        game.weatherState = "raining"
-        game.isRaining = true
-        game.rainDuration = Math.random() * 400 + 600
-        game.rainTimer = 0
-        addNotification("MONSOON! Roads may be flooded!", "#1E90FF")
-      }
-      else if (game.isRaining && game.rainTimer >= game.rainDuration) {
-        game.weatherState = "sunny"
-        game.isRaining = false
-        game.cloudDarkness = 0
-        game.rainTimer = 0
-        game.nextRainTime = 600 + Math.random() * 300
-        game.rainWarningGiven = false
-        game.raindrops = []
-        addNotification("Skies clearing up!", "#87CEEB")
-      }
-      
-      // Gradual cloud darkness during darkening phase
-      if (game.weatherState === "darkening") {
-        game.cloudDarkness = Math.min(0.7, game.cloudDarkness + 0.005)
+        else if (game.weatherState === "cloudy" && game.rainTimer >= 200) {
+          game.weatherState = "darkening"
+          game.cloudDarkness = Math.min(1, game.cloudDarkness + 0.02)
+          if (!game.rainWarningGiven) {
+            addNotification("Rain approaching! Watch for water clogging!", "#4682B4")
+            game.rainWarningGiven = true
+          }
+        }
+        else if (game.weatherState === "darkening" && game.rainTimer >= 280) {
+          game.weatherState = "drizzle"
+          addNotification("Drizzle starting...", "#6495ED")
+        }
+        else if (game.weatherState === "drizzle" && game.rainTimer >= 350) {
+          game.weatherState = "raining"
+          game.isRaining = true
+          game.rainDuration = Math.random() * 400 + 600
+          game.rainTimer = 0
+          addNotification("MONSOON! Roads may be flooded!", "#1E90FF")
+        }
+        else if (game.isRaining && game.rainTimer >= game.rainDuration) {
+          game.weatherState = "sunny"
+          game.isRaining = false
+          game.cloudDarkness = 0
+          game.rainTimer = 0
+          game.rainWarningGiven = false
+          game.raindrops = []
+          game.rainTriggered = false // Reset so rain can trigger again later
+          addNotification("Skies clearing up!", "#87CEEB")
+        }
+        
+        // Gradual cloud darkness during darkening phase
+        if (game.weatherState === "darkening") {
+          game.cloudDarkness = Math.min(0.7, game.cloudDarkness + 0.005)
+        }
       }
 
       // Clear canvas with weather-appropriate sky
@@ -1885,31 +2339,91 @@ export default function Game() {
         ctx.stroke()
       }
 
-      // Update and draw dogs
-      game.dogs.forEach((dog) => {
-        dog.x -= game.speed * 0.4 * dog.direction
+      // Update and draw dogs - new path-based behavior (each appearance is unique)
+      game.dogs = game.dogs.filter((dog) => {
+        dog.x -= game.speed * 0.6
         dog.legPhase += 0.3
-
-        // Respawn dogs
-        if (dog.x < -50 || dog.x > canvas.width + 100) {
-          if (dog.direction === -1) {
-            dog.x = canvas.width + 50
-          } else {
-            dog.x = -50
-          }
-          dog.direction = Math.random() > 0.3 ? -1 : 1
+        
+        // Move toward target Y (for crossing dogs)
+        if (dog.crossing && Math.abs(dog.y - dog.targetY) > 2) {
+          dog.y += (dog.targetY > dog.y ? 1.5 : -1.5)
         }
-
+        
+        // Remove dog when off-screen (don't respawn - new dogs appear fresh)
+        if (dog.x < -60) {
+          return false
+        }
+        
         drawDog(dog)
+        return true
       })
 
-      // Spawn new dogs occasionally - much less frequent and random timing
+      // Spawn new dogs occasionally - they appear from new paths each time
       game.lastDogSpawn++
-      const dogSpawnChance = 0.001 // Very rare
-      const minDogInterval = 600 + Math.random() * 400 // Random interval between 10-17 seconds
-      if (game.lastDogSpawn > minDogInterval && Math.random() < dogSpawnChance && game.dogs.length < 2) {
+      if (game.lastDogSpawn > 400 + Math.random() * 600 && game.dogs.length < 2) {
         spawnDog()
         game.lastDogSpawn = 0
+      }
+      
+      // Update and draw cattle - new path-based behavior
+      game.cattle = game.cattle.filter((cattle) => {
+        cattle.x -= game.speed * 0.3 // Slower than dogs
+        cattle.legPhase += 0.15
+        
+        // Move toward target Y (for crossing cattle)
+        if (cattle.crossing && Math.abs(cattle.y - cattle.targetY) > 2) {
+          cattle.y += (cattle.targetY > cattle.y ? 0.8 : -0.8)
+        }
+        
+        // Remove cattle when off-screen
+        if (cattle.x < -80) {
+          return false
+        }
+        
+        drawCattle(cattle)
+        return true
+      })
+      
+      // Spawn cattle occasionally - appears at random intervals with new paths
+      game.lastCattleSpawn++
+      if (game.lastCattleSpawn > 800 + Math.random() * 800 && game.cattle.length < 1) {
+        spawnCattle()
+        game.lastCattleSpawn = 0
+      }
+      
+      // Update and draw school crowds (only in school area)
+      if (game.currentLandmark.type === "school") {
+        game.schoolCrowds = game.schoolCrowds.filter((crowd) => {
+          crowd.x -= game.speed * 0.6
+          if (crowd.x < -100) return false
+          drawSchoolCrowd(crowd)
+          return true
+        })
+        
+        // Spawn school crowds
+        if (game.schoolCrowds.length < 3) {
+          const lastCrowd = game.schoolCrowds[game.schoolCrowds.length - 1]
+          if (!lastCrowd || lastCrowd.x < canvas.width - 200) {
+            const uniformColors = ["#FFFFFF", "#87CEEB", "#FFD700", "#90EE90"]
+            const people: SchoolCrowd["people"] = []
+            const count = 3 + Math.floor(Math.random() * 4)
+            for (let i = 0; i < count; i++) {
+              people.push({
+                offsetX: i * 15 - (count * 7),
+                offsetY: Math.random() * 10,
+                color: uniformColors[Math.floor(Math.random() * uniformColors.length)],
+                size: 8 + Math.random() * 4
+              })
+            }
+            game.schoolCrowds.push({
+              x: canvas.width + Math.random() * 100,
+              people: people
+            })
+          }
+        }
+      } else {
+        // Clear school crowds when leaving school area
+        game.schoolCrowds = []
       }
 
       // Update and draw vendors
@@ -1927,6 +2441,31 @@ export default function Game() {
         if (!lastVendor || lastVendor.x < canvas.width - minDistance) {
           spawnVendor()
         }
+      }
+      
+      // Update and draw bus stops (only in busstop area)
+      if (game.currentLandmark.type === "busstop") {
+        game.busStops = game.busStops.filter((busStop) => {
+          busStop.x -= game.speed * 0.6
+          if (busStop.x < -100) return false
+          drawBusStop(busStop)
+          return true
+        })
+        
+        // Spawn bus stops in the busstop area
+        if (game.busStops.length < 2) {
+          const lastBusStop = game.busStops[game.busStops.length - 1]
+          if (!lastBusStop || lastBusStop.x < canvas.width - 400) {
+            game.busStops.push({
+              x: canvas.width + Math.random() * 100,
+              peopleCount: 2 + Math.floor(Math.random() * 4),
+              busArriving: Math.random() > 0.7
+            })
+          }
+        }
+      } else {
+        // Clear bus stops when leaving busstop area
+        game.busStops = []
       }
 
       // Update and draw raindrops
@@ -2019,6 +2558,56 @@ export default function Game() {
         height: 40,
       }
 
+      // Check dog collisions - dogs crossing or running on road can cause collision
+      for (const dog of game.dogs) {
+        // Only check if dog is on the road (road-cross or road-run types)
+        if (dog.entryPath === "road-cross" || dog.entryPath === "road-run") {
+          const dogHitbox = {
+            x: dog.x - 20,
+            y: dog.y - 10,
+            width: 40,
+            height: 30,
+          }
+          if (
+            autoHitbox.x < dogHitbox.x + dogHitbox.width &&
+            autoHitbox.x + autoHitbox.width > dogHitbox.x &&
+            autoHitbox.y < dogHitbox.y + dogHitbox.height &&
+            autoHitbox.y + autoHitbox.height > dogHitbox.y &&
+            !game.isJumping
+          ) {
+            setGameState("gameover")
+            if (game.score > highScore) {
+              setHighScore(game.score)
+            }
+          }
+        }
+      }
+      
+      // Check cattle collisions - cattle on road can cause collision
+      for (const cattle of game.cattle) {
+        // Only check if cattle is on the road (not on footpath)
+        if (cattle.y >= GROUND_Y - 10) {
+          const cattleHitbox = {
+            x: cattle.x - 35,
+            y: cattle.y - 25,
+            width: 70,
+            height: 35,
+          }
+          if (
+            autoHitbox.x < cattleHitbox.x + cattleHitbox.width &&
+            autoHitbox.x + autoHitbox.width > cattleHitbox.x &&
+            autoHitbox.y < cattleHitbox.y + cattleHitbox.height &&
+            autoHitbox.y + autoHitbox.height > cattleHitbox.y &&
+            !game.isJumping
+          ) {
+            setGameState("gameover")
+            if (game.score > highScore) {
+              setHighScore(game.score)
+            }
+          }
+        }
+      }
+      
       // Check water clog collisions - hitting water in your lane causes game over
       for (const clog of game.waterClogs) {
         // Only collide if auto is in the same lane as the water
@@ -2085,9 +2674,6 @@ export default function Game() {
             const potholeW = 40 * obstacleSize
             obstacleHitbox = { x: obstacle.x - potholeW/2, y: obstacle.y - 5, width: potholeW, height: 10 }
             break
-          case "cow":
-            obstacleHitbox = { x: obstacle.x - 30, y: obstacle.y - 40, width: 60, height: 40 }
-            break
           case "barricade":
             // Only check collision if in the same lane as the barricade
             const barricadeLane = obstacle.lane ?? 0
@@ -2100,6 +2686,51 @@ export default function Game() {
                 y: obstacle.y - 25 + barricadeYOffset, 
                 width: 70, 
                 height: 30 
+              }
+            }
+            break
+          case "bike":
+            // Lane-specific bike
+            const bikeLane = obstacle.lane ?? 0
+            if (game.currentLane !== bikeLane) {
+              shouldCheck = false
+            } else {
+              const bikeYOffset = bikeLane * 25
+              obstacleHitbox = { 
+                x: obstacle.x - 20, 
+                y: obstacle.y - 35 + bikeYOffset, 
+                width: 40, 
+                height: 35 
+              }
+            }
+            break
+          case "ambulance":
+            // Lane-specific ambulance
+            const ambLane = obstacle.lane ?? 0
+            if (game.currentLane !== ambLane) {
+              shouldCheck = false
+            } else {
+              const ambYOffset = ambLane * 25
+              obstacleHitbox = { 
+                x: obstacle.x - 40, 
+                y: obstacle.y - 40 + ambYOffset, 
+                width: 80, 
+                height: 45 
+              }
+            }
+            break
+          case "schoolvan":
+            // Lane-specific school van
+            const vanLane = obstacle.lane ?? 0
+            if (game.currentLane !== vanLane) {
+              shouldCheck = false
+            } else {
+              const vanYOffset = vanLane * 25
+              obstacleHitbox = { 
+                x: obstacle.x - 35, 
+                y: obstacle.y - 45 + vanYOffset, 
+                width: 70, 
+                height: 50 
               }
             }
             break
@@ -2126,26 +2757,38 @@ export default function Game() {
       }
 
       // Level progression and landmarks
+      // Procedural order: residential -> hospital -> busstop -> garden (rain) -> school -> market
       const prevLevel = game.currentLevel
       game.currentLevel = Math.floor(game.score / 500) + 1
       
+      // Track distance traveled
+      game.distanceTraveled += game.speed
+      
       // Level up notifications and landmark changes
       if (game.currentLevel > prevLevel && game.currentLevel > 1) {
-        const landmarks: Landmark["type"][] = ["residential", "school", "hospital", "garden", "market"]
-        const newLandmark = landmarks[game.currentLevel % landmarks.length]
+        // Procedural landmark order
+        const landmarkOrder: Landmark["type"][] = ["residential", "hospital", "busstop", "garden", "school", "market"]
+        const landmarkIndex = (game.currentLevel - 1) % landmarkOrder.length
+        const newLandmark = landmarkOrder[landmarkIndex]
         game.currentLandmark = { type: newLandmark, startScore: game.score }
         
-        switch (game.currentLevel) {
-          case 2:
-            addNotification("Entering School Zone - Watch for cattle!", "#FFD700")
+        switch (newLandmark) {
+          case "hospital":
+            addNotification("Hospital Area - Watch for ambulances!", "#FF6347")
             break
-          case 3:
-            addNotification("Hospital Area - Traffic thickens!", "#FF6347")
+          case "busstop":
+            addNotification("Bus Stop Ahead - Traffic slowing!", "#1E90FF")
             break
-          case 4:
-            addNotification("Garden District - Potholes ahead!", "#90EE90")
+          case "garden":
+            // Trigger rain when entering garden area
+            game.rainTriggered = true
+            game.rainTimer = 0
+            addNotification("Garden District - Dark clouds gathering!", "#90EE90")
             break
-          case 5:
+          case "school":
+            addNotification("School Zone - Watch for children and vans!", "#FFD700")
+            break
+          case "market":
             addNotification("Market Area - EXTREME TRAFFIC!", "#FF0000")
             break
           default:
@@ -2174,12 +2817,13 @@ export default function Game() {
         ctx.fillText("BRAKING", canvas.width - 95, 28)
       }
 
-      // Lane indicator
+      // Lane indicator with arrow hint
       ctx.fillStyle = "rgba(0, 0, 0, 0.3)"
       ctx.fillRect(canvas.width - 100, 40, 90, 25)
       ctx.fillStyle = "#FFF"
       ctx.font = "12px Arial"
-      ctx.fillText(`Lane: ${game.currentLane === 0 ? "TOP" : "BOTTOM"}`, canvas.width - 95, 57)
+      const laneText = game.currentLane === 0 ? "TOP (press v)" : "BOTTOM (press ^)"
+      ctx.fillText(laneText, canvas.width - 98, 57)
 
       // Weather indicator
       if (game.isRaining) {
@@ -2236,9 +2880,9 @@ export default function Game() {
               <h2 className="text-3xl font-bold mb-4">Ready to Roll!</h2>
               <p className="text-lg mb-2">Navigate through the busy streets of Mumbai</p>
               <p className="text-sm mb-2 text-amber-300">Watch the traffic signal - GREEN means GO!</p>
-              <p className="text-xs mb-2 text-amber-200">Avoid: Barricades, Cows, Potholes, Cars, Buses, Water</p>
-              <p className="text-xs mb-4 text-green-300">Switch lanes to dodge lane-specific barricades!</p>
-              <p className="text-xs text-amber-200">Down = Switch Lane | Left = Brake | Space = Jump</p>
+              <p className="text-xs mb-2 text-amber-200">Avoid: Barricades, Bikes, Ambulances, School Vans, Cattle, Water</p>
+              <p className="text-xs mb-4 text-green-300">Use UP ARROW to switch from bottom to top lane!</p>
+              <p className="text-xs text-amber-200">Up/Down = Switch Lane | Left = Brake | Space = Jump</p>
               <p className="text-xl animate-pulse mt-4">Tap or Press Space to Start</p>
             </div>
           </div>
@@ -2260,9 +2904,9 @@ export default function Game() {
       </div>
 
       <div className="mt-4 text-amber-700 text-center">
-        <p className="text-sm">Space/Up = Jump | Down/S = Switch Lane | Left/B = Brake</p>
-        <p className="text-xs mt-1 text-amber-600">Mobile: Tap top to jump, bottom to switch lane, left side to brake</p>
-        <p className="text-xs text-amber-500">Navigate the chaotic streets of Mumbai - watch for traffic, water, and potholes!</p>
+        <p className="text-sm">Space = Jump | Up/Down = Switch Lane | Left/B = Brake</p>
+        <p className="text-xs mt-1 text-amber-600">Mobile: Tap middle to jump, top to switch lane, left side to brake</p>
+        <p className="text-xs text-amber-500">Navigate Mumbai streets - hospital, bus stop, garden (rain!), school zone ahead!</p>
       </div>
     </div>
   )
