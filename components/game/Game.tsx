@@ -144,6 +144,9 @@ export default function Game() {
     nextLandmarkScore: 500,
     // Time of day for visual ambiance
     timeOfDay: 0, // 0 = morning, increases over time
+    // Dynamic track width - starts at 80, decreases every 1000 score
+    trackWidth: 80,
+    baseTrackWidth: 80,
   })
 
   const jump = useCallback(() => {
@@ -201,6 +204,9 @@ export default function Game() {
     game.currentLevel = 1
     game.currentLandmark = { type: "residential", startScore: 0 }
     game.nextLandmarkScore = 500
+    // Reset track width
+    game.trackWidth = 80
+    game.baseTrackWidth = 80
     setScore(0)
     setGameState("playing")
   }, [])
@@ -448,9 +454,14 @@ export default function Game() {
       
       // Spawn from right side, moving left (opposite traffic)
       const lane = Math.random() > 0.6 ? 1 : 0 // Mostly in opposite lane
+      // Calculate lane Y position based on dynamic track width
+      const spawnRoadYOffset = (80 - game.trackWidth) / 2
+      const spawnLaneSpacing = (game.trackWidth - 30) / 2
+      const vehicleLaneY = GROUND_Y + spawnRoadYOffset + (lane === 0 ? 10 : 10 + Math.max(15, spawnLaneSpacing))
+      
       game.sideVehicles.push({
         x: canvas.width + 100,
-        y: GROUND_Y + (lane === 0 ? 10 : 45),
+        y: vehicleLaneY,
         type: type,
         color: color,
         speed: game.speed * (1.5 + Math.random() * 1), // Faster than player
@@ -463,8 +474,11 @@ export default function Game() {
     // Draw autorickshaw
     const drawAutorickshaw = (x: number, y: number) => {
       // Lane offset: lane 0 = top of road, lane 1 = bottom of road
-      const laneOffset = game.currentLane * 25
-      const baseY = GROUND_Y - 45 + y + laneOffset
+      // Dynamic lane spacing based on track width
+      const laneSpacing = (game.trackWidth - 30) / 2 // Adjust lane spacing based on track width
+      const roadYOffset = (80 - game.trackWidth) / 2 // Road centering offset
+      const laneOffset = game.currentLane * Math.max(15, laneSpacing)
+      const baseY = GROUND_Y - 45 + y + laneOffset + roadYOffset
       game.wheelRotation += game.speed * 0.1
       game.autoFrame++
 
@@ -1407,7 +1421,10 @@ export default function Game() {
     // Draw school van (parked obstacle)
     const drawSchoolVan = (x: number, y: number, lane: number) => {
       ctx.save()
-      const laneOffset = lane * 25
+      // Dynamic lane offset based on track width
+      const vanLaneSpacing = (game.trackWidth - 30) / 2
+      const vanRoadYOffset = (80 - game.trackWidth) / 2
+      const laneOffset = lane * Math.max(15, vanLaneSpacing) + vanRoadYOffset
       ctx.translate(x, y + laneOffset)
       
       // Van body - yellow school van
@@ -1620,9 +1637,11 @@ export default function Game() {
           break
 
         case "barricade":
-          // Lane-specific road barricade
+          // Lane-specific road barricade with dynamic lane spacing
           const barricadeLane = obstacle.lane ?? 0
-          const barricadeYOffset = barricadeLane * 25
+          const barricadeLaneSpacing = (game.trackWidth - 30) / 2
+          const barricadeRoadYOffset = (80 - game.trackWidth) / 2
+          const barricadeYOffset = barricadeLane * Math.max(15, barricadeLaneSpacing) + barricadeRoadYOffset
           
           ctx.save()
           ctx.translate(0, barricadeYOffset)
@@ -1859,29 +1878,37 @@ export default function Game() {
         ctx.stroke()
       }
 
-      // Draw road
-      ctx.fillStyle = "#333"
+      // Draw road with dynamic width
+      const roadWidth = game.trackWidth
+      const roadYOffset = (80 - roadWidth) / 2 // Center the road vertically
+      
+      // Road edges/shoulders
+      ctx.fillStyle = "#555"
       ctx.fillRect(0, GROUND_Y, canvas.width, 80)
+      
+      // Main road surface
+      ctx.fillStyle = "#333"
+      ctx.fillRect(0, GROUND_Y + roadYOffset, canvas.width, roadWidth)
 
-      // Road markings
+      // Road markings (center line)
       ctx.strokeStyle = "#FFF"
-      ctx.lineWidth = 3
+      ctx.lineWidth = 2
       ctx.setLineDash([30, 20])
       ctx.beginPath()
-      ctx.moveTo(0, GROUND_Y + 40)
-      ctx.lineTo(canvas.width, GROUND_Y + 40)
+      ctx.moveTo(0, GROUND_Y + roadYOffset + roadWidth / 2)
+      ctx.lineTo(canvas.width, GROUND_Y + roadYOffset + roadWidth / 2)
       ctx.stroke()
       ctx.setLineDash([])
 
       // Moving road lines
       game.groundOffset += game.speed
-      ctx.strokeStyle = "#555"
-      ctx.lineWidth = 2
+      ctx.strokeStyle = "#444"
+      ctx.lineWidth = 1
       for (let i = 0; i < canvas.width + 100; i += 100) {
         const x = i - (game.groundOffset % 100)
         ctx.beginPath()
-        ctx.moveTo(x, GROUND_Y)
-        ctx.lineTo(x, GROUND_Y + 80)
+        ctx.moveTo(x, GROUND_Y + roadYOffset)
+        ctx.lineTo(x, GROUND_Y + roadYOffset + roadWidth)
         ctx.stroke()
       }
 
@@ -1951,10 +1978,15 @@ export default function Game() {
         // Spawn water clogs at random intervals during rain
         if (game.waterClogTimer > 180 + Math.random() * 200 && game.waterClogs.length < 3) {
           const lane = Math.random() > 0.5 ? 0 : 1
+          // Calculate water clog Y position based on dynamic track width
+          const clogRoadYOffset = (80 - game.trackWidth) / 2
+          const clogLaneSpacing = (game.trackWidth - 30) / 2
+          const clogLaneY = GROUND_Y + clogRoadYOffset + (lane === 0 ? 15 : 15 + Math.max(15, clogLaneSpacing))
+          
           game.waterClogs.push({
             x: canvas.width + 100,
-            y: GROUND_Y + (lane === 0 ? 15 : 45),
-            width: 80 + Math.random() * 40,
+            y: clogLaneY,
+            width: Math.min(80 + Math.random() * 40, game.trackWidth * 0.8), // Scale water clog width with track
             wavePhase: Math.random() * Math.PI * 2,
             lane: lane,
           })
@@ -2010,11 +2042,13 @@ export default function Game() {
       // Draw autorickshaw
       drawAutorickshaw(game.autoX, game.autoY)
 
-      // Collision detection
-      const laneOffset = game.currentLane * 25
+      // Collision detection with dynamic lane spacing
+      const collisionLaneSpacing = (game.trackWidth - 30) / 2
+      const collisionRoadYOffset = (80 - game.trackWidth) / 2
+      const laneOffset = game.currentLane * Math.max(15, collisionLaneSpacing)
       const autoHitbox = {
         x: game.autoX - 25,
-        y: GROUND_Y - 45 + game.autoY + laneOffset,
+        y: GROUND_Y - 45 + game.autoY + laneOffset + collisionRoadYOffset,
         width: 70,
         height: 40,
       }
@@ -2094,10 +2128,13 @@ export default function Game() {
             if (game.currentLane !== barricadeLane) {
               shouldCheck = false
             } else {
-              const barricadeYOffset = barricadeLane * 25
+              // Dynamic barricade collision offset
+              const barricadeCollisionLaneSpacing = (game.trackWidth - 30) / 2
+              const barricadeCollisionRoadYOffset = (80 - game.trackWidth) / 2
+              const barricadeCollisionYOffset = barricadeLane * Math.max(15, barricadeCollisionLaneSpacing) + barricadeCollisionRoadYOffset
               obstacleHitbox = { 
                 x: obstacle.x - 35, 
-                y: obstacle.y - 25 + barricadeYOffset, 
+                y: obstacle.y - 25 + barricadeCollisionYOffset, 
                 width: 70, 
                 height: 30 
               }
@@ -2153,14 +2190,33 @@ export default function Game() {
         }
       }
 
-      // Increase difficulty - update base speed
-      game.baseSpeed = 5 + Math.floor(game.score / 500) * 0.5
+      // Increase difficulty - update base speed (0.2x increase every 500 score)
+      const prevSpeedLevel = Math.floor((game.score - 1) / 500)
+      const currSpeedLevel = Math.floor(game.score / 500)
+      game.baseSpeed = 5 + currSpeedLevel * 1 // 0.2x multiplier = base * 1.2, so add 1 per 500
       if (!game.isBraking && game.gameStarted) {
         game.speed = game.baseSpeed
       }
+      
+      // Notify when speed increases (but not on first level up which has its own message)
+      if (currSpeedLevel > prevSpeedLevel && currSpeedLevel > 0 && game.score > 500) {
+        addNotification(`SPEED UP! Now at ${((5 + currSpeedLevel) / 5).toFixed(1)}x speed!`, "#FFD700")
+      }
+      
+      // Dynamic track width - thinner every 1000 score (minimum 50px)
+      const prevTrackNarrowLevel = Math.floor((game.score - 1) / 1000)
+      const trackNarrowLevel = Math.floor(game.score / 1000)
+      game.trackWidth = Math.max(50, game.baseTrackWidth - trackNarrowLevel * 8)
+      
+      // Notify when track narrows
+      if (trackNarrowLevel > prevTrackNarrowLevel && trackNarrowLevel > 0) {
+        addNotification("ROAD NARROWING! Stay focused!", "#FF4500")
+      }
 
-      // Draw traffic signal
-      drawTrafficSignal()
+      // Draw traffic signal only at the beginning (before game starts)
+      if (!game.gameStarted) {
+        drawTrafficSignal()
+      }
       
       // Draw notifications
       drawNotifications()
@@ -2180,6 +2236,14 @@ export default function Game() {
       ctx.fillStyle = "#FFF"
       ctx.font = "12px Arial"
       ctx.fillText(`Lane: ${game.currentLane === 0 ? "TOP" : "BOTTOM"}`, canvas.width - 95, 57)
+      
+      // Speed indicator
+      const speedMultiplier = (game.baseSpeed / 5).toFixed(1)
+      ctx.fillStyle = "rgba(0, 0, 0, 0.3)"
+      ctx.fillRect(canvas.width - 100, 70, 90, 25)
+      ctx.fillStyle = game.baseSpeed > 7 ? "#FF6347" : "#90EE90"
+      ctx.font = "12px Arial"
+      ctx.fillText(`Speed: ${speedMultiplier}x`, canvas.width - 95, 87)
 
       // Weather indicator
       if (game.isRaining) {
