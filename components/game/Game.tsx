@@ -31,7 +31,7 @@ interface Raindrop {
 interface Obstacle {
   x: number
   y: number
-  type: "pothole" | "cow" | "barricade" | "schoolvan" | "zebracrossing"
+  type: "pothole" | "cow" | "barricade" | "schoolvan" | "zebracrossing" | "debris"
   size?: number // For varied pothole sizes
   lane?: number // For lane-specific obstacles like barricades
 }
@@ -114,13 +114,18 @@ export default function Game() {
     isBraking: false,
     score: 0,
     // Weather system - progressive transition
-    weatherState: "sunny" as "sunny" | "cloudy" | "darkening" | "drizzle" | "raining",
+    weatherState: "sunny" as "sunny" | "cloudy" | "darkening" | "drizzle" | "raining" | "stormy",
     cloudDarkness: 0, // 0-1 for gradual darkening
     isRaining: false,
+    isStormy: false, // Windy storm with turbulence
     rainTimer: 0,
     rainDuration: 0,
     nextRainTime: 400, // Later rain start
     rainWarningGiven: false,
+    // Turbulence system for storm
+    turbulenceOffset: 0,
+    turbulenceDirection: 1,
+    windParticles: [] as { x: number; y: number; speed: number; length: number }[],
     lastDogSpawn: 0,
     lastCowSpawn: 0,
     lastPotholeSpawn: 0,
@@ -181,9 +186,13 @@ export default function Game() {
     game.weatherState = "sunny"
     game.cloudDarkness = 0
     game.isRaining = false
+    game.isStormy = false
     game.rainTimer = 0
     game.nextRainTime = 500 + Math.random() * 200 // Rain comes later
     game.rainWarningGiven = false
+    game.turbulenceOffset = 0
+    game.turbulenceDirection = 1
+    game.windParticles = []
     game.lastDogSpawn = 0
     game.lastCowSpawn = 0
     game.lastPotholeSpawn = 0
@@ -397,7 +406,7 @@ export default function Game() {
       
       const level = game.currentLevel
       const random = Math.random()
-      let type: "pothole" | "cow" | "barricade"
+      let type: "pothole" | "cow" | "barricade" | "debris"
       let size = 1
       let lane: number | undefined = undefined
       
@@ -406,8 +415,14 @@ export default function Game() {
       // Level 2 (500-1500): Add cows occasionally
       // Level 3 (1500-3000): More potholes, thicker traffic
       // Level 4 (3000+): Everything intensifies - potholes + heavy traffic
+      // During storms: Add debris obstacles
       
-      if (level >= 2 && random < 0.06 && game.lastCowSpawn > 600 + Math.random() * 600) {
+      // Storm debris - high priority during storms
+      if (game.isStormy && random < 0.4) {
+        type = "debris"
+        lane = Math.random() > 0.5 ? 0 : 1
+      }
+      else if (level >= 2 && random < 0.06 && game.lastCowSpawn > 600 + Math.random() * 600) {
         type = "cow"
         game.lastCowSpawn = 0
       }
@@ -557,20 +572,31 @@ export default function Game() {
       ctx.strokeStyle = "#333"
       ctx.strokeRect(30, -25, 18, 25)
 
-      // Headlight
-      ctx.fillStyle = "#FFFF99"
-      ctx.beginPath()
-      ctx.arc(48, 10, 5, 0, Math.PI * 2)
-      ctx.fill()
+      // Headlight - only active in dark/rainy weather
+      const isDarkWeather = game.weatherState === "darkening" || game.weatherState === "drizzle" || game.weatherState === "raining" || game.weatherState === "stormy"
+      
+      if (isDarkWeather) {
+        ctx.fillStyle = "#FFFF99"
+        ctx.beginPath()
+        ctx.arc(48, 10, 5, 0, Math.PI * 2)
+        ctx.fill()
 
-      // Light beam effect
-      ctx.fillStyle = "rgba(255, 255, 150, 0.1)"
-      ctx.beginPath()
-      ctx.moveTo(53, 10)
-      ctx.lineTo(100, -10)
-      ctx.lineTo(100, 30)
-      ctx.closePath()
-      ctx.fill()
+        // Light beam effect - stronger in bad weather
+        const beamOpacity = game.weatherState === "raining" || game.weatherState === "stormy" ? 0.2 : 0.1
+        ctx.fillStyle = `rgba(255, 255, 150, ${beamOpacity})`
+        ctx.beginPath()
+        ctx.moveTo(53, 10)
+        ctx.lineTo(120, -15)
+        ctx.lineTo(120, 35)
+        ctx.closePath()
+        ctx.fill()
+      } else {
+        // Just show the headlight housing when off
+        ctx.fillStyle = "#888"
+        ctx.beginPath()
+        ctx.arc(48, 10, 4, 0, Math.PI * 2)
+        ctx.fill()
+      }
 
       // Driver silhouette
       ctx.fillStyle = "#333"
@@ -911,15 +937,27 @@ export default function Game() {
       ctx.restore()
     }
 
-    // Draw raindrop
-    const drawRaindrop = (drop: Raindrop) => {
-      ctx.strokeStyle = "rgba(174, 194, 224, 0.6)"
-      ctx.lineWidth = 1
-      ctx.beginPath()
-      ctx.moveTo(drop.x, drop.y)
-      ctx.lineTo(drop.x - 2, drop.y + drop.length)
-      ctx.stroke()
-    }
+  // Draw raindrop - angled in storm
+  const drawRaindrop = (drop: Raindrop) => {
+  ctx.strokeStyle = game.isStormy ? "rgba(200, 220, 255, 0.7)" : "rgba(174, 194, 224, 0.6)"
+  ctx.lineWidth = game.isStormy ? 2 : 1
+  ctx.beginPath()
+  ctx.moveTo(drop.x, drop.y)
+  // Storm rain is more angled due to wind
+  const windAngle = game.isStormy ? -15 : -2
+  ctx.lineTo(drop.x + windAngle, drop.y + drop.length)
+  ctx.stroke()
+  }
+  
+  // Draw wind streak for storm
+  const drawWindStreak = (particle: { x: number; y: number; speed: number; length: number }) => {
+  ctx.strokeStyle = "rgba(200, 200, 220, 0.3)"
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  ctx.moveTo(particle.x, particle.y)
+  ctx.lineTo(particle.x + particle.length, particle.y + 5)
+  ctx.stroke()
+  }
 
     // Draw side vehicle (cars, buses, trucks)
     const drawSideVehicle = (vehicle: SideVehicle) => {
@@ -1549,9 +1587,10 @@ export default function Game() {
       })
     }
     
-    // Add notification helper
+    // Add notification helper - only 1 notification at a time
     const addNotification = (text: string, color: string = "#FFF") => {
-      game.notifications.push({ text, timer: 180, color })
+      // Replace existing notification instead of stacking
+      game.notifications = [{ text, timer: 150, color }]
     }
 
     // Draw obstacle
@@ -1678,6 +1717,48 @@ export default function Game() {
           
           ctx.restore()
           break
+          
+        case "debris":
+          // Storm debris - fallen branches and leaves
+          const debrisLane = obstacle.lane ?? 0
+          const debrisLaneSpacing = (game.trackWidth - 30) / 2
+          const debrisRoadYOffset = (80 - game.trackWidth) / 2
+          const debrisYOffset = debrisLane * Math.max(15, debrisLaneSpacing) + debrisRoadYOffset
+          
+          ctx.save()
+          ctx.translate(0, debrisYOffset)
+          
+          // Main branch
+          ctx.strokeStyle = "#5D4037"
+          ctx.lineWidth = 6
+          ctx.beginPath()
+          ctx.moveTo(-30, 0)
+          ctx.lineTo(25, -5)
+          ctx.stroke()
+          
+          // Smaller branches
+          ctx.lineWidth = 3
+          ctx.beginPath()
+          ctx.moveTo(-10, -2)
+          ctx.lineTo(-15, -15)
+          ctx.stroke()
+          ctx.beginPath()
+          ctx.moveTo(10, -3)
+          ctx.lineTo(20, -18)
+          ctx.stroke()
+          
+          // Leaves scattered
+          ctx.fillStyle = "#4CAF50"
+          for (let i = 0; i < 6; i++) {
+            const lx = -25 + i * 10 + Math.sin(game.autoFrame * 0.1 + i) * 3
+            const ly = -8 + Math.cos(game.autoFrame * 0.15 + i) * 2
+            ctx.beginPath()
+            ctx.ellipse(lx, ly, 6, 4, Math.random(), 0, Math.PI * 2)
+            ctx.fill()
+          }
+          
+          ctx.restore()
+          break
       }
 
       ctx.restore()
@@ -1740,17 +1821,30 @@ export default function Game() {
         addNotification("Drizzle starting...", "#6495ED")
       }
       else if (game.weatherState === "drizzle" && game.rainTimer >= game.nextRainTime) {
-        game.weatherState = "raining"
-        game.isRaining = true
-        game.rainDuration = Math.random() * 400 + 600
-        game.rainTimer = 0
-        addNotification("MONSOON! Roads may be flooded!", "#1E90FF")
+        // 40% chance of storm instead of just rain
+        if (Math.random() < 0.4) {
+          game.weatherState = "stormy"
+          game.isRaining = true
+          game.isStormy = true
+          game.rainDuration = Math.random() * 300 + 400
+          game.rainTimer = 0
+          addNotification("STORM! Turbulence ahead!", "#FF4500")
+        } else {
+          game.weatherState = "raining"
+          game.isRaining = true
+          game.rainDuration = Math.random() * 400 + 600
+          game.rainTimer = 0
+          addNotification("MONSOON! Roads may be flooded!", "#1E90FF")
+        }
       }
-      else if (game.isRaining && game.rainTimer >= game.rainDuration) {
+      else if ((game.isRaining || game.isStormy) && game.rainTimer >= game.rainDuration) {
         game.weatherState = "sunny"
         game.isRaining = false
+        game.isStormy = false
         game.cloudDarkness = 0
         game.rainTimer = 0
+        game.turbulenceOffset = 0
+        game.windParticles = []
         game.nextRainTime = 600 + Math.random() * 300
         game.rainWarningGiven = false
         game.raindrops = []
@@ -1766,7 +1860,12 @@ export default function Game() {
       const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height)
       const morningTint = Math.min(0.3, game.timeOfDay * 0.1)
       
-      if (game.weatherState === "raining" || game.weatherState === "drizzle") {
+      if (game.weatherState === "stormy") {
+        // Dark stormy sky with purple/gray tones
+        gradient.addColorStop(0, "#1a1a2e")
+        gradient.addColorStop(0.5, "#2d2d44")
+        gradient.addColorStop(1, "#3d3d5c")
+      } else if (game.weatherState === "raining" || game.weatherState === "drizzle") {
         gradient.addColorStop(0, "#2c3e50")
         gradient.addColorStop(0.5, "#4a6572")
         gradient.addColorStop(1, "#5d7a8c")
@@ -1829,15 +1928,35 @@ export default function Game() {
         }
       }
 
-      // Spawn raindrops
-      if (game.isRaining) {
-        for (let i = 0; i < 5; i++) {
+      // Spawn raindrops - more intense during storm
+      if (game.isRaining || game.isStormy) {
+        const dropCount = game.isStormy ? 8 : 5
+        for (let i = 0; i < dropCount; i++) {
           game.raindrops.push({
             x: Math.random() * canvas.width,
             y: -10,
-            speed: Math.random() * 8 + 12,
-            length: Math.random() * 15 + 10,
+            speed: game.isStormy ? Math.random() * 12 + 15 : Math.random() * 8 + 12,
+            length: game.isStormy ? Math.random() * 20 + 15 : Math.random() * 15 + 10,
           })
+        }
+      }
+      
+      // Storm wind particles
+      if (game.isStormy) {
+        // Spawn horizontal wind streaks
+        if (Math.random() < 0.3) {
+          game.windParticles.push({
+            x: canvas.width + 10,
+            y: Math.random() * canvas.height,
+            speed: Math.random() * 15 + 20,
+            length: Math.random() * 80 + 40,
+          })
+        }
+        
+        // Update turbulence
+        game.turbulenceOffset += 0.15 * game.turbulenceDirection
+        if (Math.abs(game.turbulenceOffset) > 3) {
+          game.turbulenceDirection *= -1
         }
       }
 
@@ -1959,11 +2078,22 @@ export default function Game() {
       // Update and draw raindrops
       game.raindrops = game.raindrops.filter((drop) => {
         drop.y += drop.speed
-        drop.x -= game.speed * 0.5
-        if (drop.y > canvas.height) return false
+        // Storm rain moves more horizontally due to wind
+        drop.x -= game.isStormy ? game.speed * 1.5 : game.speed * 0.5
+        if (drop.y > canvas.height || drop.x < -20) return false
         drawRaindrop(drop)
         return true
       })
+      
+      // Update and draw wind particles during storm
+      if (game.isStormy) {
+        game.windParticles = game.windParticles.filter((particle) => {
+          particle.x -= particle.speed
+          if (particle.x + particle.length < 0) return false
+          drawWindStreak(particle)
+          return true
+        })
+      }
 
       // Spawn obstacles
       obstacleTimer++
@@ -2039,16 +2169,18 @@ export default function Game() {
         }
       }
 
-      // Draw autorickshaw
-      drawAutorickshaw(game.autoX, game.autoY)
+      // Draw autorickshaw with turbulence during storms
+      const turbulenceY = game.isStormy ? game.turbulenceOffset : 0
+      drawAutorickshaw(game.autoX, game.autoY + turbulenceY)
 
-      // Collision detection with dynamic lane spacing
+      // Collision detection with dynamic lane spacing and turbulence
       const collisionLaneSpacing = (game.trackWidth - 30) / 2
       const collisionRoadYOffset = (80 - game.trackWidth) / 2
       const laneOffset = game.currentLane * Math.max(15, collisionLaneSpacing)
+      const turbulenceYCollision = game.isStormy ? game.turbulenceOffset : 0
       const autoHitbox = {
         x: game.autoX - 25,
-        y: GROUND_Y - 45 + game.autoY + laneOffset + collisionRoadYOffset,
+        y: GROUND_Y - 45 + game.autoY + laneOffset + collisionRoadYOffset + turbulenceYCollision,
         width: 70,
         height: 40,
       }
@@ -2140,6 +2272,24 @@ export default function Game() {
               }
             }
             break
+          case "debris":
+            // Only check collision if in the same lane as the debris
+            const debrisLane = obstacle.lane ?? 0
+            if (game.currentLane !== debrisLane) {
+              shouldCheck = false
+            } else {
+              // Dynamic debris collision offset
+              const debrisCollisionLaneSpacing = (game.trackWidth - 30) / 2
+              const debrisCollisionRoadYOffset = (80 - game.trackWidth) / 2
+              const debrisCollisionYOffset = debrisLane * Math.max(15, debrisCollisionLaneSpacing) + debrisCollisionRoadYOffset
+              obstacleHitbox = { 
+                x: obstacle.x - 30, 
+                y: obstacle.y - 20 + debrisCollisionYOffset, 
+                width: 55, 
+                height: 25 
+              }
+            }
+            break
         }
 
         if (shouldCheck &&
@@ -2190,17 +2340,18 @@ export default function Game() {
         }
       }
 
-      // Increase difficulty - update base speed (0.2x increase every 500 score)
+      // Increase difficulty - update base speed (0.075x increase every 500 score)
       const prevSpeedLevel = Math.floor((game.score - 1) / 500)
       const currSpeedLevel = Math.floor(game.score / 500)
-      game.baseSpeed = 5 + currSpeedLevel * 1 // 0.2x multiplier = base * 1.2, so add 1 per 500
+      game.baseSpeed = 5 + currSpeedLevel * 0.375 // 0.075x of base 5 = 0.375 per 500 score
       if (!game.isBraking && game.gameStarted) {
         game.speed = game.baseSpeed
       }
       
       // Notify when speed increases (but not on first level up which has its own message)
       if (currSpeedLevel > prevSpeedLevel && currSpeedLevel > 0 && game.score > 500) {
-        addNotification(`SPEED UP! Now at ${((5 + currSpeedLevel) / 5).toFixed(1)}x speed!`, "#FFD700")
+        const speedPercent = Math.round((game.baseSpeed / 5) * 100)
+        addNotification(`Speed +${speedPercent - 100}%`, "#FFD700")
       }
       
       // Dynamic track width - thinner every 1000 score (minimum 50px)
@@ -2238,15 +2389,24 @@ export default function Game() {
       ctx.fillText(`Lane: ${game.currentLane === 0 ? "TOP" : "BOTTOM"}`, canvas.width - 95, 57)
       
       // Speed indicator
-      const speedMultiplier = (game.baseSpeed / 5).toFixed(1)
+      const speedPercent = Math.round((game.baseSpeed / 5) * 100)
       ctx.fillStyle = "rgba(0, 0, 0, 0.3)"
       ctx.fillRect(canvas.width - 100, 70, 90, 25)
-      ctx.fillStyle = game.baseSpeed > 7 ? "#FF6347" : "#90EE90"
+      ctx.fillStyle = speedPercent > 130 ? "#FF6347" : "#90EE90"
       ctx.font = "12px Arial"
-      ctx.fillText(`Speed: ${speedMultiplier}x`, canvas.width - 95, 87)
+      ctx.fillText(`Speed: ${speedPercent}%`, canvas.width - 95, 87)
 
       // Weather indicator
-      if (game.isRaining) {
+      if (game.isStormy) {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.6)"
+        ctx.fillRect(10, 10, 180, 40)
+        ctx.fillStyle = "#FF6347"
+        ctx.font = "bold 14px Arial"
+        ctx.fillText("STORM WARNING!", 20, 25)
+        ctx.fillStyle = "#FFD700"
+        ctx.font = "12px Arial"
+        ctx.fillText("Turbulence & debris!", 20, 42)
+      } else if (game.isRaining) {
         ctx.fillStyle = "rgba(0, 0, 0, 0.5)"
         ctx.fillRect(10, 10, 180, 40)
         ctx.fillStyle = "#FFF"
